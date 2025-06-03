@@ -20,6 +20,7 @@ from aegis import (
     create_location,
 )
 from mas.agent import BaseAgent, Brain, AgentController
+from heapq import heappush, heappop
 
 
 class ExampleAgent(Brain):
@@ -30,7 +31,7 @@ class ExampleAgent(Brain):
     def __init__(self) -> None:
         super().__init__()
         self._agent: AgentController = BaseAgent.get_agent()
-        
+
         # Initalize any variables or data structures here
         # Some potentially useful suggestions:
         # self._locs_with_survs_and_amount: dict[Location, int] = {}
@@ -78,7 +79,7 @@ class ExampleAgent(Brain):
             location = create_location(location_x, location_y)
 
             self._agent_locations[agent_id - 1] = location
-        
+
         elif msg_list[0] == "HELP":
             # Message where agents ask for help removing rubble, sent to leader agent
             # Necessary since rubble cannot be detected until an agent is adjacent to it
@@ -90,7 +91,7 @@ class ExampleAgent(Brain):
             location = create_location(location_x, location_y)
 
             #Determine which agent should be sent as the helper
-        
+
         elif msg_list[0] == "GOTO":
             # Message from group leader ordering an agent to help another agent remove rubble
             # Format: GOTO {x coordinate of rubble} {y coordinate of rubble}
@@ -100,7 +101,7 @@ class ExampleAgent(Brain):
             location = create_location(location_x, location_y)
 
             #Agent receiving this message should begin to move towards the location in the rubble
-        
+
         elif msg_list[0] == "LEADER":
             # Message sharing the id of the agent leader
             # Format: LEADER {agent id}
@@ -154,16 +155,102 @@ class ExampleAgent(Brain):
             self.send_and_end_turn(TEAM_DIG())
             return
 
-
         # Additional logic can be added here (or anywhere), such as choosing which direction to move to based on lots of different factors!
         # You can make decisions using data you have learned through messages and stored in your data structures above
         # e.g. if you are the leader, you can find the closest agent to a survivor and tell that agent to go save them
 
-        # Default action: Move the agent north if no other specific conditions are met. (you probably never want your code to reach here)
-        self.send_and_end_turn(MOVE(Direction.NORTH))
+        # Generate a path to the survivor
+        #TODO: Current algorithm works for just 1 survivor, change it so it works for multiple survivors (to be done by Mahin)
+        path = self.get_path_to_survivor(world)
+
+        # Make a move according to the path
+        self.make_a_move(path)
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
         self._agent.log(f"SENDING {command}")
         self._agent.send(command)
         self._agent.send(END_TURN())
+
+    def get_survivor_location(self, world):
+        grid = world.get_world_grid()  # grid is a list[list[Cell]]
+        for row in grid:
+            for cell in row:
+                if cell.has_survivors:
+                    return cell.location
+        return None
+
+    # Method for pathfinding. Returns a list of locations making up the path; Returns None if no path found
+    def get_path_to_survivor(self, world):
+
+        # Locate the survivor, if no survivor found then return None
+        survivor_location = self.get_survivor_location(world)
+        if survivor_location is None:
+            return None
+
+        # Create a 2d list to mark visited/found cells during pathfinding
+        found = [[False for _ in range(world.width)] for _ in range(world.height)]  # Initially no cells are found
+
+        to_visit = []  # A priority queue to store the paths we want to visit
+        # We start the path with the agent location; The move cost of the initial agent location is 0
+        heappush(to_visit, (0, [self._agent.get_location()]))
+
+        while len(to_visit) > 0:
+            current_cost, current_path = heappop(to_visit)
+            current_location = current_path[-1]
+
+            # Subtract the heuristic value from current cost
+            if current_location is not self._agent.get_location():
+                current_cost = current_cost - self.get_heuristic(current_location)
+
+            # Check if survivor is at current location
+            if current_location == survivor_location:
+                return current_path[1:]  # We exclude 1st element since it is the spawn location
+
+            # Iterate through the neighbours of the current cell
+            for direction in Direction:
+                if direction != Direction.CENTER:
+                    adj_location = current_location.add(direction)
+
+                    # Check if the location is valid (can't be -ve), on the map and not already found
+                    if adj_location is not None and world.on_map(adj_location) and not found[adj_location.y][adj_location.x]:
+                        found[adj_location.y][adj_location.x] = True
+                        cell = world.get_cell_at(adj_location)
+
+                        # Only visit if normal or charging cell
+                        if cell.is_normal_cell() or cell.is_charging_cell():
+                            # Calculate heuristic for the cell at the location we are searching
+                            heuristic = self.get_heuristic(adj_location)
+                            heappush(to_visit,
+                                     (current_cost + cell.move_cost + heuristic, current_path + [adj_location]))
+        return None
+
+    # Move towards the survivor according to the path
+    def make_a_move(self, path):
+        # First check if path list is not empty
+        if path:
+            # Get the direction we need to move from our current location according to the path
+            direction = self._agent.get_location().direction_to(path[0])
+            path[1:]
+            self.send_and_end_turn(MOVE(direction))
+
+    # A method to calculate the heuristic for a given location
+    def get_heuristic(self, loc):
+        # Calculate the difference between x coordinates of survivor location and the given parameter location
+        # Do the same for y coordinates
+        x1 = self.get_survivor_location(self.get_world()).x
+        x2 = loc.x
+        y1 = self.get_survivor_location(self.get_world()).y
+        y2 = loc.y
+        dx = abs(x1 - x2)
+        dy = abs(y1 - y2)
+
+        # Return the higher difference out of x coordinates and y coordinates
+        if dx > dy:
+            return dx
+        return dy
+
+        # Logic: Since we can move diagonally, we can move horizontally and vertically at the same time. Thus,
+        # we need maximum dx or dy steps, whichever is greater, because we can cover both directions in that amount
+        # of steps. Now since the minimum move cost of cells is 1, total cost of path is always greater than or equal
+        # to the total steps. Hence, the heuristic is admissible.
