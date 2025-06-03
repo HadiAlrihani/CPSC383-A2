@@ -35,7 +35,7 @@ class ExampleAgent(Brain):
         # Some potentially useful suggestions:
         # self._locs_with_survs_and_amount: dict[Location, int] = {}
         # self._visited_locations: set[Location] = set()
-        # self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
+        self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
         self._current_goal: Location | None = None
 
     @override
@@ -56,8 +56,8 @@ class ExampleAgent(Brain):
         msg_list = smr.msg.split()
 
         if msg_list[0] == "MOVE":
-            # Extract the location from the rest of the message
-            # Remember to convert numbers from a strings to integers
+            # Agent receiving this message should move to the specified location as its next movement
+            # Format: MOVE {x coordinate} {y coordinate}
             location_x = int(msg_list[1])
             location_y = int(msg_list[2])
             # Create a Location object from the extracted coordinates.
@@ -93,13 +93,18 @@ class ExampleAgent(Brain):
         
         elif msg_list[0] == "GOTO":
             # Message from group leader ordering an agent to help another agent remove rubble
-            # Format: GOTO {x coordinate} {y coordinate}
-            location_x = int(msg_list[2])
-            location_y = int(msg_list[3])
+            # Format: GOTO {x coordinate of rubble} {y coordinate of rubble}
+            location_x = int(msg_list[1])
+            location_y = int(msg_list[2])
             # Create a Location object from the extracted coordinates.
             location = create_location(location_x, location_y)
 
             #Agent receiving this message should begin to move towards the location in the rubble
+        
+        elif msg_list[0] == "LEADER":
+            # Message sharing the id of the agent leader
+            # Format: LEADER {agent id}
+            leader_id = msg_list[1]
 
         else:
             # A message was sent that doesn't match any of our known formats
