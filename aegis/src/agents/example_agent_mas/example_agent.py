@@ -68,7 +68,38 @@ class ExampleAgent(Brain):
             # Log the received message and the agent's location.
             self._agent.log(f"Agent {self._agent.get_agent_id().id} is heading to location: {location}")
 
-        # you can add cases for other types of messages here
+        elif msg_list[0] == "INIT":
+            # Initialization message where agents send their starting location along with their ID
+            # Format: INIT {agent_id} {x coordinate} {y coordinate}
+            agent_id = int(msg_list[1])
+            location_x = int(msg_list[2])
+            location_y = int(msg_list[3])
+            # Create a Location object from the extracted coordinates.
+            location = create_location(location_x, location_y)
+
+            self._agent_locations[agent_id - 1] = location
+        
+        elif msg_list[0] == "HELP":
+            # Message where agents ask for help removing rubble, sent to leader agent
+            # Necessary since rubble cannot be detected until an agent is adjacent to it
+            # Format: HELP {agent_id of agent requesting help} {x coordinate} {y coordinate}
+            agent_id = int(msg_list[1]) #used so we don't accidentally consider sending the agent requesting for help as the helper
+            location_x = int(msg_list[2])
+            location_y = int(msg_list[3])
+            # Create a Location object from the extracted coordinates.
+            location = create_location(location_x, location_y)
+
+            #Determine which agent should be sent as the helper
+        
+        elif msg_list[0] == "GOTO":
+            # Message from group leader ordering an agent to help another agent remove rubble
+            # Format: GOTO {x coordinate} {y coordinate}
+            location_x = int(msg_list[2])
+            location_y = int(msg_list[3])
+            # Create a Location object from the extracted coordinates.
+            location = create_location(location_x, location_y)
+
+            #Agent receiving this message should begin to move towards the location in the rubble
 
         else:
             # A message was sent that doesn't match any of our known formats
