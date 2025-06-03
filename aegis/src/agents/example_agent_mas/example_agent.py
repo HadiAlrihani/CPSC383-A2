@@ -117,6 +117,8 @@ class ExampleAgent(Brain):
 
         # Examples of how to send a message to other agents.
 
+        #TODO: Make agent with id 1 as the leader. Keep a variable so that if leader dies then the agent with next id becomes leader. Can also keep a boolean is_leader to know if current agent is leader.
+
         # Using AgentIDList() will send the message to all agents in your group
         # Useful for broadcasting information, such as about the world state (e.g. to tell people a survivor was saved) or needing help with a task (e.g. need another agent to help dig this rubble)).
         self._agent.send(SEND_MESSAGE(AgentIDList(), f"Hello from agent {self._agent.get_agent_id().id}!"))
@@ -161,6 +163,7 @@ class ExampleAgent(Brain):
 
         # Generate a path to the survivor
         #TODO: Current algorithm works for just 1 survivor, change it so it works for multiple survivors (to be done by Mahin)
+        #TODO: Change the algorithm to incorporate charging cells (to be done by Mahin)
         path = self.get_path_to_survivor(world)
 
         # Make a move according to the path
