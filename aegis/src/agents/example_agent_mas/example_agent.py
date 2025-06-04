@@ -146,6 +146,8 @@ class ExampleAgent(Brain):
 
         # If a survivor is present, save it and end the turn.
         if isinstance(top_layer, Survivor):
+            # Remove survivor from dictionary
+            del self._locs_with_survs_and_amount[current_cell.location]
             self.send_and_end_turn(SAVE_SURV())
             # return is used after EVERY send_and_end_turn method call to "end turn early". This is so only 1 command is sent to aegis, meaning only 1 command is processed.
             # If 2+ commands are sent, only the last will be processed, leading to potentially unexpected behaviour from your agent(s).
@@ -167,15 +169,15 @@ class ExampleAgent(Brain):
             self.get_survivor_locations(world)  # Updates self._locs_with_survs_and_amount
 
         survivor_locations = list(self._locs_with_survs_and_amount.keys())
-        if survivor_locations:
-            #TODO: Add a condition to check if path to survivor exists or not, if not then remove it from dict and list
-            #TODO: Also check if survivor is already being saved, or needs multiple agents
-            target = self.get_closest_survivor(world, survivor_locations)
 
-            if target:
-                path = self.get_path_to_location(world, target)
-                # Make a move according to the path
-                self.make_a_move(path)
+        #TODO: Add a condition to check if path to survivor exists or not, if not then remove it from dict and list
+        #TODO: Also check if survivor is already being saved, or needs multiple agents
+        target = self.get_closest_survivor()
+
+        if target:
+            path = self.get_path_to_location(world, target)
+            # Make a move according to the path
+            self.make_a_move(path)
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
@@ -195,13 +197,19 @@ class ExampleAgent(Brain):
 
     # This method returns the location of a survivor which is closest to the current agent (based on heuristic)
     # Parameter is a list of all survivors
-    def get_closest_survivor(self, survivor_locations):
+    def get_closest_survivor(self,):
+        survivor_locations = list(self._locs_with_survs_and_amount.keys())
+
+        # If no survivors left, return None
+        if not survivor_locations:
+            return None
+
         min_dist = float('inf')
         closest_survivor = None
         for loc in survivor_locations:
             dist = self.get_heuristic(self._agent.get_location(), loc)
             if dist < min_dist:
-                min_cost = dist
+                min_dist = dist
                 closest_survivor = loc
         return closest_survivor
 
