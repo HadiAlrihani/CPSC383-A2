@@ -4,6 +4,7 @@ from typing import override
 from aegis import (
     END_TURN,
     MOVE,
+    SLEEP,
     SAVE_SURV,
     SEND_MESSAGE,
     SEND_MESSAGE_RESULT,
@@ -146,15 +147,15 @@ class ExampleAgent(Brain):
 
         # If a survivor is present, save it and end the turn.
         if isinstance(top_layer, Survivor):
-            # Remove survivor from dictionary
-            del self._locs_with_survs_and_amount[current_cell.location]
+            # Remove survivor from dictionary since they are being saved
+            self._locs_with_survs_and_amount.pop(current_cell.location, None)
             self.send_and_end_turn(SAVE_SURV())
             # return is used after EVERY send_and_end_turn method call to "end turn early". This is so only 1 command is sent to aegis, meaning only 1 command is processed.
             # If 2+ commands are sent, only the last will be processed, leading to potentially unexpected behaviour from your agent(s).
             return
 
-        # If rubble is present, try to clear it and end the turn.
-        if isinstance(top_layer, Rubble):
+        # If rubble is present and survivor is present, try to clear it and end the turn.
+        if isinstance(top_layer, Rubble) and world.get_cell_at(self._agent.get_location()).has_survivors:
             self.send_and_end_turn(TEAM_DIG())
             return
 
@@ -163,21 +164,37 @@ class ExampleAgent(Brain):
         # e.g. if you are the leader, you can find the closest agent to a survivor and tell that agent to go save them
 
         # Generate a path to the survivor
-        #TODO: Current algorithm works for just 1 survivor, change it so it works for multiple survivors (to be done by Mahin)
-        #TODO: Change the algorithm to incorporate charging cells (to be done by Mahin)
-        if self._agent.get_round_number() == 1:
-            self.get_survivor_locations(world)  # Updates self._locs_with_survs_and_amount
 
-        survivor_locations = list(self._locs_with_survs_and_amount.keys())
+        target_survivor = self.get_closest_survivor()
 
-        #TODO: Add a condition to check if path to survivor exists or not, if not then remove it from dict and list
-        #TODO: Also check if survivor is already being saved, or needs multiple agents
-        target = self.get_closest_survivor()
+        # If a target survivor exists, move towards it
+        if target_survivor:
+            path_tuple = self.get_path_to_location(world, target_survivor)  # The tuple contains both that path and cost
 
-        if target:
-            path = self.get_path_to_location(world, target)
+            # If path to survivor does not exist, remove the survivor from our dictionary
+            if not path_tuple:
+                self._locs_with_survs_and_amount.pop(target_survivor, None)
+                self.send_and_end_turn(MOVE(Direction.CENTER))
+                return
+
+            # The path tuple contains both that path and cost
+            path, path_cost = path_tuple
+
+            # If agent does not have enough energy to reach survivor and save it, then find the closest charging cell
+            if (path_cost + 1) > self._agent.get_energy_level():  # +1 is added which is saving cost
+
+                # If current location has a charge cell, use it. Else, find the charge cell
+                if world.get_cell_at(self._agent.get_location()).is_charging_cell():
+                    self.send_and_end_turn(SLEEP())
+                else:
+                    charging_cell = self.get_closest_charging_cell(world, path)
+                    if charging_cell:
+                        charging_path, charging_path_cost = self.get_path_to_location(world, charging_cell)
+                        self.make_a_move(charging_path)
+                        return
             # Make a move according to the path
             self.make_a_move(path)
+            return
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
@@ -198,6 +215,7 @@ class ExampleAgent(Brain):
     # This method returns the location of a survivor which is closest to the current agent (based on heuristic)
     # Parameter is a list of all survivors
     def get_closest_survivor(self,):
+        self.get_survivor_locations(self.get_world())  # Updates self._locs_with_survs_and_amount
         survivor_locations = list(self._locs_with_survs_and_amount.keys())
 
         # If no survivors left, return None
@@ -213,9 +231,9 @@ class ExampleAgent(Brain):
                 closest_survivor = loc
         return closest_survivor
 
-    #TODO: Issues: Path to survivor might not exist, survivor is already being saved by another agent
+    #TODO: Issues: Survivor is already being saved by another agent (Might need multiple agents for clearing ruble)
 
-    # Method for pathfinding. Returns a list of locations making up the path; Returns None if no path found
+    # Method for pathfinding. Returns a list of locations making up the path and cost of path; None if no path found
     def get_path_to_location(self, world, target):
 
         if target is None:
@@ -236,9 +254,9 @@ class ExampleAgent(Brain):
             if current_location is not self._agent.get_location():
                 current_cost = current_cost - self.get_heuristic(current_location, target)
 
-            # Check if survivor is at current location
+            # Check if our target is our current location
             if current_location == target:
-                return current_path[1:]  # We exclude 1st element since it is the spawn location
+                return (current_path[1:], current_cost)  # We exclude 1st element since it is the spawn location
 
             # Iterate through the neighbours of the current cell
             for direction in Direction:
@@ -264,8 +282,11 @@ class ExampleAgent(Brain):
         if path:
             # Get the direction we need to move from our current location according to the path
             direction = self._agent.get_location().direction_to(path[0])
-            path[1:]
             self.send_and_end_turn(MOVE(direction))
+            return
+        # Default move is to stay at the same location
+        self.send_and_end_turn(MOVE(Direction.CENTER))
+        return
 
     # A method to calculate the heuristic for a given location from a target
     def get_heuristic(self, current_loc, target):
@@ -283,7 +304,32 @@ class ExampleAgent(Brain):
             return dx
         return dy
 
-        # Logic: Since we can move diagonally, we can move horizontally and vertically at the same time. Thus,
-        # we need maximum dx or dy steps, whichever is greater, because we can cover both directions in that amount
-        # of steps. Now since the minimum move cost of cells is 1, total cost of path is always greater than or equal
-        # to the total steps. Hence, the heuristic is admissible.
+    # This method returns a list of all survivors in the world and adds them to self._locs_with_survs_and_amount dictionary
+    def get_charging_locations(self, world):
+        charging_locations = []
+        grid = world.get_world_grid()  # grid is a list[list[Cell]]
+        for row in grid:
+            for cell in row:
+                if cell.is_charging_cell():
+                    charging_locations.append(cell.location)
+        return charging_locations
+
+    # Method to find the closest charging location/cell to the path we are following
+    # Parameters are the world object and path to the survivor
+    def get_closest_charging_cell(self, world, path):
+        charging_locations = self.get_charging_locations(world)
+
+        # If charging locations or a path to the survivors does not exist, return None
+        if not charging_locations or not path:
+            return None
+
+        # Find the closest charge location by comparing heuristic distance with all the locations in our path
+        min_dist = float('inf')
+        closest_loc = None
+        for charge_loc in charging_locations:
+            for path_loc in path:
+                dist = self.get_heuristic(charge_loc, path_loc)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_loc = charge_loc
+        return closest_loc
