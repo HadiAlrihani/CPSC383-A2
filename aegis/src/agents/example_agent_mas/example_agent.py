@@ -33,9 +33,8 @@ class ExampleAgent(Brain):
         self._agent: AgentController = BaseAgent.get_agent()
 
         # Initalize any variables or data structures here
-        # Some potentially useful suggestions:
-        # self._locs_with_survs_and_amount: dict[Location, int] = {}
-        # self._visited_locations: set[Location] = set()
+        self._locs_with_survs_and_amount: dict[Location, int] = {}  # amount is the number of agents needed to save a survivor (i.e. to remove rubble)
+        self._visited_locations: set[Location] = set()
         self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
         self._current_goal: Location | None = None
 
@@ -164,10 +163,19 @@ class ExampleAgent(Brain):
         # Generate a path to the survivor
         #TODO: Current algorithm works for just 1 survivor, change it so it works for multiple survivors (to be done by Mahin)
         #TODO: Change the algorithm to incorporate charging cells (to be done by Mahin)
-        path = self.get_path_to_survivor(world)
+        if self._agent.get_round_number() == 1:
+            self.get_survivor_locations(world)  # Updates self._locs_with_survs_and_amount
 
-        # Make a move according to the path
-        self.make_a_move(path)
+        survivor_locations = list(self._locs_with_survs_and_amount.keys())
+        if survivor_locations:
+            #TODO: Add a condition to check if path to survivor exists or not, if not then remove it from dict and list
+            #TODO: Also check if survivor is already being saved, or needs multiple agents
+            target = self.get_closest_survivor(world, survivor_locations)
+
+            if target:
+                path = self.get_path_to_location(world, target)
+                # Make a move according to the path
+                self.make_a_move(path)
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
@@ -175,20 +183,34 @@ class ExampleAgent(Brain):
         self._agent.send(command)
         self._agent.send(END_TURN())
 
-    def get_survivor_location(self, world):
+    # This method returns a list of all survivors in the world and adds them to self._locs_with_survs_and_amount dictionary
+    def get_survivor_locations(self, world):
         grid = world.get_world_grid()  # grid is a list[list[Cell]]
         for row in grid:
             for cell in row:
                 if cell.has_survivors:
-                    return cell.location
-        return None
+                    self._locs_with_survs_and_amount[cell.location] = 1
+
+        return list(self._locs_with_survs_and_amount.keys())
+
+    # This method returns the location of a survivor which is closest to the current agent (based on heuristic)
+    # Parameter is a list of all survivors
+    def get_closest_survivor(self, survivor_locations):
+        min_dist = float('inf')
+        closest_survivor = None
+        for loc in survivor_locations:
+            dist = self.get_heuristic(self._agent.get_location(), loc)
+            if dist < min_dist:
+                min_cost = dist
+                closest_survivor = loc
+        return closest_survivor
+
+    #TODO: Issues: Path to survivor might not exist, survivor is already being saved by another agent
 
     # Method for pathfinding. Returns a list of locations making up the path; Returns None if no path found
-    def get_path_to_survivor(self, world):
+    def get_path_to_location(self, world, target):
 
-        # Locate the survivor, if no survivor found then return None
-        survivor_location = self.get_survivor_location(world)
-        if survivor_location is None:
+        if target is None:
             return None
 
         # Create a 2d list to mark visited/found cells during pathfinding
@@ -204,10 +226,10 @@ class ExampleAgent(Brain):
 
             # Subtract the heuristic value from current cost
             if current_location is not self._agent.get_location():
-                current_cost = current_cost - self.get_heuristic(current_location)
+                current_cost = current_cost - self.get_heuristic(current_location, target)
 
             # Check if survivor is at current location
-            if current_location == survivor_location:
+            if current_location == target:
                 return current_path[1:]  # We exclude 1st element since it is the spawn location
 
             # Iterate through the neighbours of the current cell
@@ -223,7 +245,7 @@ class ExampleAgent(Brain):
                         # Only visit if normal or charging cell
                         if cell.is_normal_cell() or cell.is_charging_cell():
                             # Calculate heuristic for the cell at the location we are searching
-                            heuristic = self.get_heuristic(adj_location)
+                            heuristic = self.get_heuristic(adj_location, target)
                             heappush(to_visit,
                                      (current_cost + cell.move_cost + heuristic, current_path + [adj_location]))
         return None
@@ -237,14 +259,14 @@ class ExampleAgent(Brain):
             path[1:]
             self.send_and_end_turn(MOVE(direction))
 
-    # A method to calculate the heuristic for a given location
-    def get_heuristic(self, loc):
+    # A method to calculate the heuristic for a given location from a target
+    def get_heuristic(self, current_loc, target):
         # Calculate the difference between x coordinates of survivor location and the given parameter location
         # Do the same for y coordinates
-        x1 = self.get_survivor_location(self.get_world()).x
-        x2 = loc.x
-        y1 = self.get_survivor_location(self.get_world()).y
-        y2 = loc.y
+        x1 = target.x
+        x2 = current_loc.x
+        y1 = target.y
+        y2 = current_loc.y
         dx = abs(x1 - x2)
         dy = abs(y1 - y2)
 
