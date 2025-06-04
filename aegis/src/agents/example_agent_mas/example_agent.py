@@ -304,7 +304,7 @@ class ExampleAgent(Brain):
             return dx
         return dy
 
-    # This method returns a list of all survivors in the world and adds them to self._locs_with_survs_and_amount dictionary
+    # This method returns a list of locations of all charge cells in the world map
     def get_charging_locations(self, world):
         charging_locations = []
         grid = world.get_world_grid()  # grid is a list[list[Cell]]
@@ -319,11 +319,11 @@ class ExampleAgent(Brain):
     def get_closest_charging_cell(self, world, path):
         charging_locations = self.get_charging_locations(world)
 
-        # If charging locations or a path to the survivors does not exist, return None
+        # If charging cells or a path to the survivors does not exist, return None
         if not charging_locations or not path:
             return None
 
-        # Find the closest charge location by comparing heuristic distance with all the locations in our path
+        # Find the closest charge cell by comparing heuristic distance of all charge cells with all the locations in our path
         min_dist = float('inf')
         closest_loc = None
         for charge_loc in charging_locations:
