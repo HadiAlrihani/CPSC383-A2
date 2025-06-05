@@ -35,6 +35,7 @@ class ExampleAgent(Brain):
 
         # Initalize any variables or data structures here
         self._locs_with_survs_and_amount: dict[Location, int] = {}  # amount is the number of agents needed to save a survivor (i.e. to remove rubble)
+        self._status_of_survivor: dict[Location, tuple[bool, int]] = {}  # Boolean value is True if an agent is on its way to save the survivor, False otherwise. Int value is agent id saving it.
         self._visited_locations: set[Location] = set()
         self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
         self._current_goal: Location | None = None
@@ -47,7 +48,7 @@ class ExampleAgent(Brain):
 
         self._agent.log(f"SEND_MESSAGE_RESULT: {smr}")
 
-        # Below is an example of how you could structure your message handling.
+        # MESSAGE HANDLING
         # For this approach, your message consists of a message type string followed by numeric information (e.g. coordinates)
         # Different parts of the message are split by spaces so we can easily separate them
 
@@ -107,6 +108,14 @@ class ExampleAgent(Brain):
             # Format: LEADER {agent id}
             leader_id = msg_list[1]
 
+        elif msg_list[0] == "SAVING":
+            # Message from an agent which is saving a survivor at the mentioned location
+            # So that we don't save the save survivor if help is not needed
+            location_x = int(msg_list[1])
+            location_y = int(msg_list[2])
+            # Update it in our status_of_survivor dictionary
+            self._status_of_survivor[create_location(location_x, location_y)] = (True, smr.from_agent_id.id)
+
         else:
             # A message was sent that doesn't match any of our known formats
             self._agent.log(f"Unknown message format: {smr.msg}")
@@ -114,6 +123,14 @@ class ExampleAgent(Brain):
     @override
     def think(self) -> None:
         self._agent.log("Thinking")
+
+        if self._agent.get_round_number() == 1:
+            # Locate all survivors and set their status. Will be helpful in knowing which survivor is being saved.
+            grid = self.get_world().get_world_grid()  # grid is a list[list[Cell]]
+            for row in grid:
+                for cell in row:
+                    if cell.has_survivors:
+                        self._status_of_survivor[cell.location] = (False, 0) # Agent ID is set as zero since no agent is saving the survivor
 
         # Examples of how to send a message to other agents.
 
@@ -125,9 +142,9 @@ class ExampleAgent(Brain):
 
         # Putting in a specific agent ID will send to that agent only (e.g. sending information to a group leader).
         # Here we are telling agent 2 to move to our current location if we are the leader (ID = 1)
-        if self._agent.get_agent_id().id == 1:
-            message = f"MOVE {self._agent.get_location().x} {self._agent.get_location().y}"
-            self._agent.send(SEND_MESSAGE(AgentIDList([AgentID(2, 1)]), message))
+        # if self._agent.get_agent_id().id == 1:
+        #     message = f"MOVE {self._agent.get_location().x} {self._agent.get_location().y}"
+        #     self._agent.send(SEND_MESSAGE(AgentIDList([AgentID(2, 1)]), message))
 
         # Retrieve the current state of the world.
         world = self.get_world()
@@ -148,7 +165,7 @@ class ExampleAgent(Brain):
         # If a survivor is present, save it and end the turn.
         if isinstance(top_layer, Survivor):
             # Remove survivor from dictionary since they are being saved
-            self._locs_with_survs_and_amount.pop(current_cell.location, None)
+            self._status_of_survivor[current_cell.location] = (False, 0)  # Set status to false cause the survivor is saved and there might be another survivor at that location who might need saving
             self.send_and_end_turn(SAVE_SURV())
             # return is used after EVERY send_and_end_turn method call to "end turn early". This is so only 1 command is sent to aegis, meaning only 1 command is processed.
             # If 2+ commands are sent, only the last will be processed, leading to potentially unexpected behaviour from your agent(s).
@@ -159,26 +176,27 @@ class ExampleAgent(Brain):
             self.send_and_end_turn(TEAM_DIG())
             return
 
-        # Additional logic can be added here (or anywhere), such as choosing which direction to move to based on lots of different factors!
-        # You can make decisions using data you have learned through messages and stored in your data structures above
-        # e.g. if you are the leader, you can find the closest agent to a survivor and tell that agent to go save them
+        # GENERATE A PATH TO THE SURVIVOR
+        # Start by finding the closest survivor to save
+        self._current_goal = self.get_closest_survivor()
 
-        # Generate a path to the survivor
+        # If a goal exists, move towards it, else end turn
+        if self._current_goal:
+            path_tuple = self.get_path_to_location(world, self._current_goal)  # The tuple contains both, the path and cost
 
-        target_survivor = self.get_closest_survivor()
-
-        # If a target survivor exists, move towards it
-        if target_survivor:
-            path_tuple = self.get_path_to_location(world, target_survivor)  # The tuple contains both that path and cost
-
-            # If path to survivor does not exist, remove the survivor from our dictionary
+            # If path to survivor/goal does not exist, remove the survivor from our dictionary
             if not path_tuple:
-                self._locs_with_survs_and_amount.pop(target_survivor, None)
-                self.send_and_end_turn(MOVE(Direction.CENTER))
+                self._status_of_survivor[self._current_goal] = (True, 0)  # Since we can't reach this survivor, we assume someone else is saving them and we ignore it
+                self._agent.send(END_TURN())
                 return
 
             # The path tuple contains both that path and cost
             path, path_cost = path_tuple
+            # Mark survivor as being saved, if not already marked
+            if not self._status_of_survivor[self._current_goal][0]:
+                self._status_of_survivor[self._current_goal] = (True, self._agent.get_agent_id().id)
+                # Send a message to other agents that current agent is saving a survivor at what location
+                self._agent.send(SEND_MESSAGE(AgentIDList(), f"SAVING {self._current_goal.x} {self._current_goal.y}"))
 
             # If agent does not have enough energy to reach survivor and save it, then find the closest charging cell
             if (path_cost + 1) > self._agent.get_energy_level():  # +1 is added which is saving cost
@@ -195,6 +213,9 @@ class ExampleAgent(Brain):
             # Make a move according to the path
             self.make_a_move(path)
             return
+        else:
+            self._agent.send(END_TURN())
+            return
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
@@ -202,12 +223,13 @@ class ExampleAgent(Brain):
         self._agent.send(command)
         self._agent.send(END_TURN())
 
-    # This method returns a list of all survivors in the world and adds them to self._locs_with_survs_and_amount dictionary
+    # This method returns a list of survivors in the world (not being saved) and adds them to self._locs_with_survs_and_amount dictionary
     def get_survivor_locations(self, world):
+        self._locs_with_survs_and_amount.clear()
         grid = world.get_world_grid()  # grid is a list[list[Cell]]
         for row in grid:
             for cell in row:
-                if cell.has_survivors:
+                if cell.has_survivors and (not self._status_of_survivor[cell.location][0] or self._status_of_survivor[cell.location][1] == self._agent.get_agent_id().id):
                     self._locs_with_survs_and_amount[cell.location] = 1
 
         return list(self._locs_with_survs_and_amount.keys())
@@ -215,8 +237,7 @@ class ExampleAgent(Brain):
     # This method returns the location of a survivor which is closest to the current agent (based on heuristic)
     # Parameter is a list of all survivors
     def get_closest_survivor(self,):
-        self.get_survivor_locations(self.get_world())  # Updates self._locs_with_survs_and_amount
-        survivor_locations = list(self._locs_with_survs_and_amount.keys())
+        survivor_locations = self.get_survivor_locations(self.get_world())
 
         # If no survivors left, return None
         if not survivor_locations:
