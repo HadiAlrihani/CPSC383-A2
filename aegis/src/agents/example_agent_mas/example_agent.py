@@ -23,7 +23,9 @@ class CoordinatedAgent(Brain):
         self._help_assignments: dict[Location, AgentID] = {}
 
     @override
-    def handle_send_message_result(self, smr: SEND_MESSAGE_RESULT) -> None:
+    # Handles incoming messages from other agents.
+# Based on the type of message (e.g., MOVE, HELP, GOTO), performs appropriate action.
+def handle_send_message_result(self, smr: SEND_MESSAGE_RESULT) -> None:
         self._agent.log(f"Message received: {smr.msg}")
         parts = smr.msg.strip().split()
         if not parts:
@@ -59,7 +61,9 @@ class CoordinatedAgent(Brain):
             self._is_leader = self._leader_id == self._agent.get_agent_id().id
 
     @override
-    def think(self) -> None:
+    # Main logic that runs every round for the agent.
+# Handles survivor saving, rubble digging, energy management, and coordination.
+def think(self) -> None:
         self._agent.log("Thinking...")
         world = self.get_world()
 
@@ -119,7 +123,9 @@ class CoordinatedAgent(Brain):
         direction = self._agent.get_location().direction_to(next_loc)
         self.send_and_end_turn(MOVE(direction))
 
-    def get_survivor_locations(self, world):
+    # Scans the world grid to find all cells with survivors.
+# Populates the _locs_with_survs_and_amount dictionary.
+def get_survivor_locations(self, world):
         grid = world.get_world_grid()
         for row in grid:
             for cell in row:
@@ -141,7 +147,9 @@ class CoordinatedAgent(Brain):
                 closest_survivor = loc
         return closest_survivor
 
-    def get_path_to_location(self, world, target):
+    # Uses A* algorithm to find the shortest path to the target location.
+# Returns the path and its movement cost.
+def get_path_to_location(self, world, target):
         if target is None:
             return None
         found = [[False for _ in range(world.width)] for _ in range(world.height)]
@@ -178,7 +186,9 @@ class CoordinatedAgent(Brain):
                     charging_locations.append(cell.location)
         return charging_locations
 
-    def get_closest_charging_cell(self, world, path):
+    # Finds the charging cell closest to the current path.
+# Used when agent doesn't have enough energy to complete its task.
+def get_closest_charging_cell(self, world, path):
         charging_locations = self.get_charging_locations(world)
         if not charging_locations or not path:
             return None
