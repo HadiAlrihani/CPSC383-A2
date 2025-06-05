@@ -183,12 +183,6 @@ class ExampleAgent(Brain):
         if self._current_goal:
             path_tuple = self.get_path_to_location(world, self._current_goal)  # The tuple contains both, the path and cost
 
-            # If path to survivor/goal does not exist, remove the survivor from our dictionary
-            if not path_tuple:
-                self._status_of_survivor[self._current_goal] = (True, 0)  # Since we can't reach this survivor, we assume someone else is saving them and we ignore it
-                self.send_and_end_turn(MOVE(Direction.CENTER))
-                return
-
             # The path tuple contains both that path and cost
             path, path_cost = path_tuple
             # Mark survivor as being saved, if not already marked
@@ -222,7 +216,7 @@ class ExampleAgent(Brain):
             return
         else:
             # Sending sleep does not use energy and agent doesn't move
-            self.send_and_end_turn(MOVE(Direction.CENTER))
+            self.send_and_end_turn(SLEEP())
             return
 
     def send_and_end_turn(self, command: AgentCommand):
@@ -237,8 +231,14 @@ class ExampleAgent(Brain):
         grid = world.get_world_grid()  # grid is a list[list[Cell]]
         for row in grid:
             for cell in row:
+                # Only add survivor if it is not being saved by another agent
                 if cell.has_survivors and (not self._status_of_survivor[cell.location][0] or self._status_of_survivor[cell.location][1] == self._agent.get_agent_id().id):
-                    self._locs_with_survs_and_amount[cell.location] = 1
+                    # Only add survivor if it is reachable
+                    path_tuple = self.get_path_to_location(world, cell.location)  # The tuple contains both, the path and cost
+                    if not path_tuple:
+                        self._status_of_survivor[self._current_goal] = (True, 0)  # Since we can't reach this survivor, we assume someone else is saving them and we ignore it
+                    else:
+                        self._locs_with_survs_and_amount[cell.location] = 1
 
         return list(self._locs_with_survs_and_amount.keys())
 
