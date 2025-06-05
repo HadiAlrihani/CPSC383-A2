@@ -37,7 +37,7 @@ class ExampleAgent(Brain):
         self._locs_with_survs_and_amount: dict[Location, int] = {}  # amount is the number of agents needed to save a survivor (i.e. to remove rubble)
         self._status_of_survivor: dict[Location, tuple[bool, int]] = {}  # Boolean value is True if an agent is on its way to save the survivor, False otherwise. Int value is agent id saving it.
         self._visited_locations: set[Location] = set()
-        self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
+        self._agent_locations_and_energy: dict[int, tuple[Location, int]] = {}  # Key is agent id (just the int unique id), Value is a tuple of location and energy
         self._current_goal: Location | None = None
 
     @override
@@ -70,16 +70,17 @@ class ExampleAgent(Brain):
             # Log the received message and the agent's location.
             self._agent.log(f"Agent {self._agent.get_agent_id().id} is heading to location: {location}")
 
-        elif msg_list[0] == "INIT":
-            # Initialization message where agents send their starting location along with their ID
-            # Format: INIT {agent_id} {x coordinate} {y coordinate}
-            agent_id = int(msg_list[1])
-            location_x = int(msg_list[2])
-            location_y = int(msg_list[3])
+        elif msg_list[0] == "LOC":
+            # Message where agents send the location they will be at in the next round
+            # Also their energy after next round
+            # Format: LOC {x coordinate} {y coordinate}
+            location_x = int(msg_list[1])
+            location_y = int(msg_list[2])
+            energy = int(msg_list[3])
             # Create a Location object from the extracted coordinates.
             location = create_location(location_x, location_y)
 
-            self._agent_locations[agent_id - 1] = location
+            self._agent_locations_and_energy[smr.from_agent_id.id] = (location, energy)
 
         elif msg_list[0] == "HELP":
             # Message where agents ask for help removing rubble, sent to leader agent
@@ -111,6 +112,7 @@ class ExampleAgent(Brain):
         elif msg_list[0] == "SAVING":
             # Message from an agent which is saving a survivor at the mentioned location
             # So that we don't save the save survivor if help is not needed
+            # Format: SAVING {x coordinate} {y coordinate}
             location_x = int(msg_list[1])
             location_y = int(msg_list[2])
             # Update it in our status_of_survivor dictionary
@@ -131,8 +133,6 @@ class ExampleAgent(Brain):
                 for cell in row:
                     if cell.has_survivors:
                         self._status_of_survivor[cell.location] = (False, 0) # Agent ID is set as zero since no agent is saving the survivor
-
-        # Examples of how to send a message to other agents.
 
         #TODO: Make agent with id 1 as the leader. Keep a variable so that if leader dies then the agent with next id becomes leader. Can also keep a boolean is_leader to know if current agent is leader.
 
@@ -176,6 +176,7 @@ class ExampleAgent(Brain):
             self.send_and_end_turn(TEAM_DIG())
             return
 
+        self._agent.log(f"LOCATIONS: {self._agent_locations}")
         # GENERATE A PATH TO THE SURVIVOR
         # Start by finding the closest survivor to save
         self._current_goal = self.get_closest_survivor()
@@ -201,19 +202,28 @@ class ExampleAgent(Brain):
             # If agent does not have enough energy to reach survivor and save it, then find the closest charging cell
             if (path_cost + 1) > self._agent.get_energy_level():  # +1 is added which is saving cost
 
-                # If current location has a charge cell, use it. Else, find the charge cell
+                # If current location has a charge cell, use it. Else, find and move to the charge cell
                 if world.get_cell_at(self._agent.get_location()).is_charging_cell():
                     self.send_and_end_turn(SLEEP())
                 else:
                     charging_cell = self.get_closest_charging_cell(world, path)
                     if charging_cell:
                         charging_path, charging_path_cost = self.get_path_to_location(world, charging_cell)
+                        # Send your next location and energy to all the agents (next location helps with message lag of 1 round)
+                        next_loc = charging_path[0]
+                        move_cost = world.get_cell_at(next_loc).move_cost
+                        self._agent.send(SEND_MESSAGE(AgentIDList(), f"LOC {next_loc.x} {next_loc.y} {self._agent.get_energy_level() - move_cost}"))
                         self.make_a_move(charging_path)
                         return
             # Make a move according to the path
+            # Send your next location and energy to all the agents (next location helps with message lag of 1 round)
+            next_loc = path[0]
+            move_cost = world.get_cell_at(next_loc).move_cost
+            self._agent.send(SEND_MESSAGE(AgentIDList(), f"LOC {next_loc.x} {next_loc.y} {self._agent.get_energy_level() - move_cost}"))
             self.make_a_move(path)
             return
         else:
+            self._agent.log(f"ENERGYYYY {self._agent.get_energy_level()}")
             self._agent.send(END_TURN())
             return
 
@@ -252,7 +262,7 @@ class ExampleAgent(Brain):
                 closest_survivor = loc
         return closest_survivor
 
-    #TODO: Issues: Survivor is already being saved by another agent (Might need multiple agents for clearing ruble)
+    #TODO: Issues: Might need multiple agents for clearing ruble
 
     # Method for pathfinding. Returns a list of locations making up the path and cost of path; None if no path found
     def get_path_to_location(self, world, target):
@@ -305,8 +315,8 @@ class ExampleAgent(Brain):
             direction = self._agent.get_location().direction_to(path[0])
             self.send_and_end_turn(MOVE(direction))
             return
-        # Default move is to stay at the same location
-        self.send_and_end_turn(MOVE(Direction.CENTER))
+        # Default is to not move
+        self._agent.send(END_TURN())
         return
 
     # A method to calculate the heuristic for a given location from a target
