@@ -8,23 +8,23 @@ from mas.agent import BaseAgent, Brain, AgentController
 from heapq import heappush, heappop
 
 
-class ExampleAgent(Brain):
+class CoordinatedAgent(Brain):
     NUM_AGENTS = 7
 
     def __init__(self) -> None:
         super().__init__()
         self._agent: AgentController = BaseAgent.get_agent()
-        self._survivors: dict[Location, int] = {}
-        self._visited: set[Location] = set()
-        self._agent_positions: list[Location | None] = [None] * self.NUM_AGENTS
-        self._goal: Location | None = None
+        self._locs_with_survs_and_amount: dict[Location, int] = {}
+        self._visited_locations: set[Location] = set()
+        self._agent_locations: list[Location | None] = [None] * self.NUM_AGENTS
+        self._current_goal: Location | None = None
         self._is_leader: bool = False
         self._leader_id: int = 1
+        self._help_assignments: dict[Location, AgentID] = {}
 
     @override
     def handle_send_message_result(self, smr: SEND_MESSAGE_RESULT) -> None:
-        """Process messages received from other agents."""
-        self._agent.log(f"Received message: {smr.msg}")
+        self._agent.log(f"Message received: {smr.msg}")
         parts = smr.msg.strip().split()
         if not parts:
             return
@@ -32,159 +32,162 @@ class ExampleAgent(Brain):
         msg_type = parts[0]
 
         if msg_type == "MOVE":
-            self._goal = create_location(int(parts[1]), int(parts[2]))
+            self._current_goal = create_location(int(parts[1]), int(parts[2]))
 
         elif msg_type == "INIT":
             aid = int(parts[1])
-            self._agent_positions[aid - 1] = create_location(int(parts[2]), int(parts[3]))
+            self._agent_locations[aid - 1] = create_location(int(parts[2]), int(parts[3]))
 
         elif msg_type == "HELP":
-            # Format: HELP agent_id x y
-            pass  # Can implement logic to choose helper here
+            if self._is_leader:
+                agent_id = int(parts[1])
+                location = create_location(int(parts[2]), int(parts[3]))
+                if location not in self._help_assignments:
+                    for i in range(self.NUM_AGENTS):
+                        if self._agent.get_agent_id().id != i + 1 and self._agent_locations[i]:
+                            self._agent.send(SEND_MESSAGE(
+                                AgentIDList([AgentID(i + 1, 1)]), f"GOTO {location.x} {location.y}"
+                            ))
+                            self._help_assignments[location] = AgentID(i + 1, 1)
+                            break
 
         elif msg_type == "GOTO":
-            self._goal = create_location(int(parts[1]), int(parts[2]))
+            self._current_goal = create_location(int(parts[1]), int(parts[2]))
 
         elif msg_type == "LEADER":
             self._leader_id = int(parts[1])
             self._is_leader = self._leader_id == self._agent.get_agent_id().id
 
-        else:
-            self._agent.log(f"Unknown message: {smr.msg}")
-
     @override
     def think(self) -> None:
-        """Main agent logic per round."""
-        self._agent.log("Agent thinking...")
+        self._agent.log("Thinking...")
+        world = self.get_world()
 
-        # Broadcast starting location on round 1
         if self._agent.get_round_number() == 1:
             loc = self._agent.get_location()
             msg = f"INIT {self._agent.get_agent_id().id} {loc.x} {loc.y}"
             self._agent.send(SEND_MESSAGE(AgentIDList(), msg))
 
-        world = self.get_world()
         if not world:
-            return self._act(MOVE(Direction.CENTER))
+            return self.send_and_end_turn(MOVE(Direction.CENTER))
 
         curr_loc = self._agent.get_location()
         curr_cell = world.get_cell_at(curr_loc)
-        if not curr_cell:
-            return self._act(MOVE(Direction.CENTER))
 
-        # Handle saving survivor
-        if isinstance(curr_cell.get_top_layer(), Survivor):
-            self._survivors.pop(curr_loc, None)
-            return self._act(SAVE_SURV())
+        if curr_cell is None:
+            return self.send_and_end_turn(MOVE(Direction.CENTER))
 
-        # Dig if rubble + survivor present
-        if isinstance(curr_cell.get_top_layer(), Rubble) and curr_cell.has_survivors:
-            return self._act(TEAM_DIG())
+        top_layer = curr_cell.get_top_layer()
 
-        # Leader logic: assign other agents
-        if self._is_leader:
-            # Example: send MOVE command to agent 2
-            self._agent.send(SEND_MESSAGE(AgentIDList([AgentID(2, 1)]), f"MOVE {curr_loc.x} {curr_loc.y}"))
+        if isinstance(top_layer, Survivor):
+            self._locs_with_survs_and_amount.pop(curr_loc, None)
+            return self.send_and_end_turn(SAVE_SURV())
 
-        # Find closest survivor
-        target = self._closest_survivor()
-        if target:
-            path_cost_pair = self._find_path(world, target)
-            if not path_cost_pair:
-                self._survivors.pop(target, None)
-                return self._act(MOVE(Direction.CENTER))
+        if isinstance(top_layer, Rubble) and curr_cell.has_survivors:
+            msg = f"HELP {self._agent.get_agent_id().id} {curr_loc.x} {curr_loc.y}"
+            self._agent.send(SEND_MESSAGE(AgentIDList([AgentID(self._leader_id, 1)]), msg))
+            return self.send_and_end_turn(TEAM_DIG())
 
-            path, cost = path_cost_pair
-            energy = self._agent.get_energy_level()
+        if self._current_goal:
+            path = self.get_path_to_location(world, self._current_goal)
+            if path:
+                return self.make_a_move(path[0])
 
-            if (cost + 1) > energy:
-                if curr_cell.is_charging_cell():
-                    return self._act(SLEEP())
+        target_survivor = self.get_closest_survivor()
+        if target_survivor:
+            path_tuple = self.get_path_to_location(world, target_survivor)
+            if path_tuple:
+                path, path_cost = path_tuple
+                if (path_cost + 1) > self._agent.get_energy_level():
+                    if curr_cell.is_charging_cell():
+                        return self.send_and_end_turn(SLEEP())
+                    charging_cell = self.get_closest_charging_cell(world, path)
+                    if charging_cell:
+                        charging_path = self.get_path_to_location(world, charging_cell)
+                        if charging_path:
+                            return self.make_a_move(charging_path[0])
+                return self.make_a_move(path[0])
 
-                charge_target = self._closest_charge_to_path(world, path)
-                if charge_target:
-                    charge_path, _ = self._find_path(world, charge_target)
-                    return self._move_along(charge_path)
+        return self.send_and_end_turn(MOVE(Direction.CENTER))
 
-            return self._move_along(path)
-
-        return self._act(MOVE(Direction.CENTER))
-
-    def _act(self, cmd: AgentCommand):
-        self._agent.log(f"Executing: {cmd}")
-        self._agent.send(cmd)
+    def send_and_end_turn(self, command: AgentCommand):
+        self._agent.log(f"SENDING {command}")
+        self._agent.send(command)
         self._agent.send(END_TURN())
 
-    def _move_along(self, path: list[Location]):
-        if path:
-            direction = self._agent.get_location().direction_to(path[0])
-            self._act(MOVE(direction))
-        else:
-            self._act(MOVE(Direction.CENTER))
+    def make_a_move(self, next_loc: Location):
+        direction = self._agent.get_location().direction_to(next_loc)
+        self.send_and_end_turn(MOVE(direction))
 
-    def _closest_survivor(self) -> Location | None:
-        """Return the closest survivor location based on heuristic."""
-        self._update_survivor_cache()
-        if not self._survivors:
-            return None
-        return min(self._survivors, key=lambda loc: self._heuristic(self._agent.get_location(), loc))
-
-    def _update_survivor_cache(self):
-        world = self.get_world()
-        if not world:
-            return
-        for row in world.get_world_grid():
+    def get_survivor_locations(self, world):
+        grid = world.get_world_grid()
+        for row in grid:
             for cell in row:
                 if cell.has_survivors:
-                    self._survivors[cell.location] = 1
+                    self._locs_with_survs_and_amount[cell.location] = 1
+        return list(self._locs_with_survs_and_amount.keys())
 
-    def _find_path(self, world: World, target: Location) -> tuple[list[Location], int] | None:
-        """A* search to find path to target."""
-        visited = [[False] * world.width for _ in range(world.height)]
-        start = self._agent.get_location()
-        heap = [(0, [start])]
+    def get_closest_survivor(self):
+        self.get_survivor_locations(self.get_world())
+        survivor_locations = list(self._locs_with_survs_and_amount.keys())
+        if not survivor_locations:
+            return None
+        min_dist = float('inf')
+        closest_survivor = None
+        for loc in survivor_locations:
+            dist = self.get_heuristic(self._agent.get_location(), loc)
+            if dist < min_dist:
+                min_dist = dist
+                closest_survivor = loc
+        return closest_survivor
 
-        while heap:
-            cost, path = heappop(heap)
-            curr = path[-1]
-
-            if curr == target:
-                return path[1:], cost
-
+    def get_path_to_location(self, world, target):
+        if target is None:
+            return None
+        found = [[False for _ in range(world.width)] for _ in range(world.height)]
+        to_visit = [(0, [self._agent.get_location()])]
+        while to_visit:
+            current_cost, current_path = heappop(to_visit)
+            current_location = current_path[-1]
+            if current_location is not self._agent.get_location():
+                current_cost -= self.get_heuristic(current_location, target)
+            if current_location == target:
+                return (current_path[1:], current_cost)
             for direction in Direction:
-                if direction == Direction.CENTER:
-                    continue
-
-                neighbor = curr.add(direction)
-                if not world.on_map(neighbor):
-                    continue
-
-                if visited[neighbor.y][neighbor.x]:
-                    continue
-
-                cell = world.get_cell_at(neighbor)
-                if not (cell.is_normal_cell() or cell.is_charging_cell()):
-                    continue
-
-                visited[neighbor.y][neighbor.x] = True
-                heuristic = self._heuristic(neighbor, target)
-                heappush(heap, (cost + cell.move_cost + heuristic, path + [neighbor]))
-
+                if direction != Direction.CENTER:
+                    adj_location = current_location.add(direction)
+                    if adj_location and world.on_map(adj_location) and not found[adj_location.y][adj_location.x]:
+                        found[adj_location.y][adj_location.x] = True
+                        cell = world.get_cell_at(adj_location)
+                        if cell.is_normal_cell() or cell.is_charging_cell():
+                            heuristic = self.get_heuristic(adj_location, target)
+                            heappush(to_visit, (current_cost + cell.move_cost + heuristic, current_path + [adj_location]))
         return None
 
-    def _heuristic(self, a: Location, b: Location) -> int:
-        return max(abs(a.x - b.x), abs(a.y - b.y))
+    def get_heuristic(self, current_loc, target):
+        dx = abs(target.x - current_loc.x)
+        dy = abs(target.y - current_loc.y)
+        return max(dx, dy)
 
-    def _charging_cells(self, world: World) -> list[Location]:
-        return [cell.location for row in world.get_world_grid() for cell in row if cell.is_charging_cell()]
+    def get_charging_locations(self, world):
+        charging_locations = []
+        grid = world.get_world_grid()
+        for row in grid:
+            for cell in row:
+                if cell.is_charging_cell():
+                    charging_locations.append(cell.location)
+        return charging_locations
 
-    def _closest_charge_to_path(self, world: World, path: list[Location]) -> Location | None:
-        charging = self._charging_cells(world)
-        if not charging:
+    def get_closest_charging_cell(self, world, path):
+        charging_locations = self.get_charging_locations(world)
+        if not charging_locations or not path:
             return None
-
-        return min(
-            charging,
-            key=lambda ch: min(self._heuristic(ch, step) for step in path),
-            default=None
-        )
+        min_dist = float('inf')
+        closest_loc = None
+        for charge_loc in charging_locations:
+            for path_loc in path:
+                dist = self.get_heuristic(charge_loc, path_loc)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_loc = charge_loc
+        return closest_loc
