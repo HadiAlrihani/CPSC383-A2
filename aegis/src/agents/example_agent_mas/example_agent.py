@@ -134,8 +134,6 @@ class ExampleAgent(Brain):
                     if cell.has_survivors:
                         self._status_of_survivor[cell.location] = (False, 0) # Agent ID is set as zero since no agent is saving the survivor
 
-        #TODO: Make agent with id 1 as the leader. Keep a variable so that if leader dies then the agent with next id becomes leader. Can also keep a boolean is_leader to know if current agent is leader.
-
         # Using AgentIDList() will send the message to all agents in your group
         # Useful for broadcasting information, such as about the world state (e.g. to tell people a survivor was saved) or needing help with a task (e.g. need another agent to help dig this rubble)).
         self._agent.send(SEND_MESSAGE(AgentIDList(), f"Hello from agent {self._agent.get_agent_id().id}!"))
@@ -176,7 +174,7 @@ class ExampleAgent(Brain):
             self.send_and_end_turn(TEAM_DIG())
             return
 
-        self._agent.log(f"LOCATIONS: {self._agent_locations}")
+        self._agent.log(f"LOCATIONS: {self._agent_locations_and_energy}")
         # GENERATE A PATH TO THE SURVIVOR
         # Start by finding the closest survivor to save
         self._current_goal = self.get_closest_survivor()
@@ -188,7 +186,7 @@ class ExampleAgent(Brain):
             # If path to survivor/goal does not exist, remove the survivor from our dictionary
             if not path_tuple:
                 self._status_of_survivor[self._current_goal] = (True, 0)  # Since we can't reach this survivor, we assume someone else is saving them and we ignore it
-                self._agent.send(END_TURN())
+                self.send_and_end_turn(SLEEP())
                 return
 
             # The path tuple contains both that path and cost
@@ -223,8 +221,8 @@ class ExampleAgent(Brain):
             self.make_a_move(path)
             return
         else:
-            self._agent.log(f"ENERGYYYY {self._agent.get_energy_level()}")
-            self._agent.send(END_TURN())
+            # Sending sleep does not use energy and agent doesn't move
+            self.send_and_end_turn(SLEEP())
             return
 
     def send_and_end_turn(self, command: AgentCommand):
