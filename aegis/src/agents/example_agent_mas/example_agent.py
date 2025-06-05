@@ -186,7 +186,7 @@ class ExampleAgent(Brain):
             # If path to survivor/goal does not exist, remove the survivor from our dictionary
             if not path_tuple:
                 self._status_of_survivor[self._current_goal] = (True, 0)  # Since we can't reach this survivor, we assume someone else is saving them and we ignore it
-                self.send_and_end_turn(SLEEP())
+                self.send_and_end_turn(MOVE(Direction.CENTER))
                 return
 
             # The path tuple contains both that path and cost
@@ -222,7 +222,7 @@ class ExampleAgent(Brain):
             return
         else:
             # Sending sleep does not use energy and agent doesn't move
-            self.send_and_end_turn(SLEEP())
+            self.send_and_end_turn(MOVE(Direction.CENTER))
             return
 
     def send_and_end_turn(self, command: AgentCommand):
