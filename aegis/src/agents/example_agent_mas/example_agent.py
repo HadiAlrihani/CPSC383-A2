@@ -1,3 +1,11 @@
+'''
+Name: Hadi Alrihani, Hasan Qasim, Mahin Chondigara
+Date: June 6, 2025
+Course: CPSC 383
+Semester: Spring 2025
+Tutorial: T02 (Hadi, Mahin), T_ (Hasan)
+'''
+
 from typing import override, Optional
 
 # If you need to import anything else, add it to the import below.
@@ -25,9 +33,6 @@ from heapq import heappush, heappop
 
 
 class ExampleAgent(Brain):
-    # Store any constants you want to define here
-    # Example:
-    NUM_AGENTS = 7
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,9 +41,9 @@ class ExampleAgent(Brain):
         # Initalize any variables or data structures here
         self._locs_with_survs_and_amount: dict[Location, int] = {}  # amount is the number of agents needed to save a survivor (i.e. to remove rubble)
         self._status_of_survivor: dict[Location, tuple[bool, int]] = {}  # Boolean value is True if an agent is on its way to save the survivor, False otherwise. Int value is agent id saving it.
-        self._visited_locations: set[Location] = set()
         self._agent_locations_and_energy: dict[int, tuple[Location, int]] = {}  # Key is agent id (just the int unique id), Value is a tuple of location and energy
         self._agent_location_of_helping: dict[int, Optional[Location]] = {}  # Key is agent id (just uid), Value is a tuple of location its helping at (None if not helping)
+        self._following_agent: dict[int, Optional[int]] = {}  # Key is id of agent following, value is id of agent being followed
         self._current_goal: Location | None = None
 
     @override
@@ -53,25 +58,10 @@ class ExampleAgent(Brain):
         # For this approach, your message consists of a message type string followed by numeric information (e.g. coordinates)
         # Different parts of the message are split by spaces so we can easily separate them
 
-        # Example message: receiving "MOVE 2 1" tells this agent to move to Location (2, 1)
-
         # We can start by splitting the message components into a list of strings based on spaces
         msg_list = smr.msg.split()
 
-        if msg_list[0] == "MOVE":
-            # Agent receiving this message should move to the specified location as its next movement
-            # Format: MOVE {x coordinate} {y coordinate}
-            location_x = int(msg_list[1])
-            location_y = int(msg_list[2])
-            # Create a Location object from the extracted coordinates.
-            location = create_location(location_x, location_y)
-
-            self._current_goal = location
-
-            # Log the received message and the agent's location.
-            self._agent.log(f"Agent {self._agent.get_agent_id().id} is heading to location: {location}")
-
-        elif msg_list[0] == "LOC":
+        if msg_list[0] == "LOC":
             # Message where agents send the location they will be at in the next round
             # Also their energy after next round
             # Format: LOC {x coordinate} {y coordinate}
@@ -103,6 +93,21 @@ class ExampleAgent(Brain):
 
             self._agent_location_of_helping[agent_id] = None
 
+        elif msg_list[0] == "FOLLOWING":
+            # Message where agents select another agent to follow
+            # Format: FOLLOWING {ID of agent we are following}
+            target_id = int(msg_list[1])
+            follower_agent  = smr.from_agent_id.id
+
+            self._following_agent[follower_agent] = target_id
+
+        elif msg_list[0] == "FOLLOWING_STOPPED":
+            # Message where agents tell they stopped following, so other agents can ask them for another help if needed
+            # Format: FOLLOWING_STOPPED
+            agent_id = smr.from_agent_id.id
+
+            self._following_agent[agent_id] = None
+
         elif msg_list[0] == "CANCELED_TASKS":
             # Message where agents tell they are not saving a survivor if they initially were going to
             # So other agents can take over their tasks if possible
@@ -110,21 +115,6 @@ class ExampleAgent(Brain):
             agent_id = smr.from_agent_id.id
 
             self.cancel_tasks(agent_id)
-
-        elif msg_list[0] == "GOTO":
-            # Message from group leader ordering an agent to help another agent remove rubble
-            # Format: GOTO {x coordinate of rubble} {y coordinate of rubble}
-            location_x = int(msg_list[1])
-            location_y = int(msg_list[2])
-            # Create a Location object from the extracted coordinates.
-            location = create_location(location_x, location_y)
-
-            #Agent receiving this message should begin to move towards the location in the rubble
-
-        elif msg_list[0] == "LEADER":
-            # Message sharing the id of the agent leader
-            # Format: LEADER {agent id}
-            leader_id = msg_list[1]
 
         elif msg_list[0] == "SAVING":
             # Message from an agent which is saving a survivor at the mentioned location
@@ -155,9 +145,9 @@ class ExampleAgent(Brain):
             self._agent_location_of_helping[self._agent.get_agent_id().id] = None
             self._agent.send(SEND_MESSAGE(AgentIDList(), f"HELP_OVER"))
 
-        # Using AgentIDList() will send the message to all agents in your group
-        # Useful for broadcasting information, such as about the world state (e.g. to tell people a survivor was saved) or needing help with a task (e.g. need another agent to help dig this rubble)).
-        self._agent.send(SEND_MESSAGE(AgentIDList(), f"Hello from agent {self._agent.get_agent_id().id}!"))
+        # Set following agent to None (not following) at start of each round, so if we don't need to follow then other agents can follow
+        self._following_agent[self._agent.get_agent_id().id] = None
+        self._agent.send(SEND_MESSAGE(AgentIDList(), f"FOLLOWING_STOPPED"))
 
         # Retrieve the current state of the world.
         world = self.get_world()
@@ -280,9 +270,24 @@ class ExampleAgent(Brain):
             self.make_a_move(path)
             return
         else:
-            # Sending sleep does not use energy and agent doesn't move
-            self.send_and_end_turn(SLEEP())
-            return
+            # Since this agent does not have a task, follow another agent in case they need help later
+            target_agent_id = self.get_agent_to_follow(world)
+            if target_agent_id:
+                self._current_goal = self._agent_locations_and_energy[target_agent_id][0]
+                # Inform other agents that we are following someone
+                self._agent.send(SEND_MESSAGE(AgentIDList(),f"FOLLOWING {target_agent_id}"))
+                path, path_cost = self.get_path_to_location(world, self._agent.get_location(), self._current_goal)
+                if path:
+                    # Send your next location and energy to all the agents (next location helps with message lag of 1 round)
+                    next_loc = path[0]
+                    move_cost = world.get_cell_at(next_loc).move_cost
+                    self._agent.send(SEND_MESSAGE(AgentIDList(),f"LOC {next_loc.x} {next_loc.y} {self._agent.get_energy_level() - move_cost}"))
+                self.make_a_move(path)
+                return
+            else:
+                # Sending sleep does not use energy and agent doesn't move
+                self.send_and_end_turn(SLEEP())
+                return
 
     def send_and_end_turn(self, command: AgentCommand):
         """Send a command and end your turn."""
@@ -414,8 +419,8 @@ class ExampleAgent(Brain):
             direction = self._agent.get_location().direction_to(path[0])
             self.send_and_end_turn(MOVE(direction))
             return
-        # Default is to not move
-        self._agent.send(END_TURN())
+        # Default is to move to center
+        self.send_and_end_turn(MOVE(Direction.CENTER))
         return
 
     # A method to calculate the heuristic for a given location from a target
@@ -508,3 +513,36 @@ class ExampleAgent(Brain):
             if self._status_of_survivor[survivor][1] == id:
                 self._status_of_survivor[survivor] = (False, 0)
         return
+
+    # Method that gives a task free agent the closest agent (who is saving a survivor) it can follow, incase help is needed
+    # Returns id of the agent selected, None if no agent is selected
+    def get_agent_to_follow(self, world):
+        # Get a list of all agent ids
+        all_agents = list(self._agent_locations_and_energy.keys())
+        # Get a list of ids of agents which are saving a survivor
+        agents_to_follow = []
+        for loc in list(self._status_of_survivor.keys()):
+            if self._status_of_survivor[loc][0] and self._status_of_survivor[loc][1] != 0:
+                agents_to_follow.append(self._status_of_survivor[loc][1])
+
+        # Select the closest agent from the list which is not being followed
+        min_dist = float('inf')
+        selected_agent = None
+        for target in agents_to_follow:
+            can_follow = True
+            # check if any other agent is already following our target. If yes, then we can't follow our target
+            for follower in all_agents:
+                # Can only follow if the target agent is not being followed by another agent
+                if follower != self._agent.get_agent_id().id and self._following_agent[follower] == target:
+                    can_follow = False
+
+            if can_follow:
+                # Check if the current target is our closest target so far
+                path_tuple = self.get_path_to_location(world, self._agent.get_location(), self._agent_locations_and_energy[target][0])
+                if path_tuple:
+                    dist = len(path_tuple[0])
+                    if dist < min_dist:
+                        min_dist = dist
+                        selected_agent = target
+
+        return selected_agent
