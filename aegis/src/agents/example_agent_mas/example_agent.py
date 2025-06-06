@@ -94,7 +94,7 @@ class ExampleAgent(Brain):
 
             # If the message is directed towards this agent
             if agent_id == self._agent.get_agent_id().id:
-                message = f"CANCEL {self._current_goal.x} {self._current_goal.y}"
+                message = f"CANCEL {self._current_goal}"
                 SEND_MESSAGE(AgentIDList(), message)
 
                 self._current_goal = location #set new goal for this agent
@@ -122,11 +122,8 @@ class ExampleAgent(Brain):
 
         elif msg_list[0] == "CANCEL":
             #MESSAGE from an agent notifying that they are no longer pursusing the survivor at the given location
-            #Format: CANCEL {x coordinate of survivor} {y coordinate of survivor}
-            location_x = int(msg_list[1])
-            location_y = int(msg_list[2])
-            # Create a Location object from the extracted coordinates.
-            location = create_location(location_x, location_y)
+            #Format: CANCEL {location of survivor}
+            location = msg_list[1]
 
             #set that the agent is no longer being saved by an agent
             self._status_of_survivor[location] = (False, 0)
@@ -184,30 +181,36 @@ class ExampleAgent(Brain):
         # If rubble is present and survivor is present, try to clear it and end the turn.
         if isinstance(top_layer, Rubble) and world.get_cell_at(self._agent.get_location()).has_survivors:
             #if multiple agents are required to clear the rubble, request help
-            if self._locs_with_survs_and_amount[current_cell.location] > 1:
+            if top_layer.remove_agents > 1:
                 nearest_cost = float('inf') #initialize nearest agent as infinity
                 nearest_id = self._agent.get_agent_id().id #index of current agent initially
+                nearest_path = []
 
                 for agent_id in self._agent_locations_and_energy:
-                    agent_location, agent_energy = self._agent_locations_and_energy(agent_id) 
+                    agent_location, agent_energy = self._agent_locations_and_energy[agent_id] 
 
                     if agent_id == self._agent.get_agent_id().id: #agent skips its own location, only looks at other agents
                         continue
 
-                    agent_path, agent_cost = self.get_path_to_location(self, world, agent_location) #path and cost to first agent in list
+                    agent_path, agent_cost = self.get_path_to_location(world, agent_location) #path and cost to first agent in list
 
-                    if agent_cost < agent_energy: #agent won't have enough energy
+                    if agent_cost > agent_energy: #agent won't have enough energy
                         continue
 
                     if agent_cost < nearest_cost:
                         nearest_cost = agent_cost
                         nearest_id = agent_id
+                        nearest_path = agent_path
 
                 message = f"HELP {nearest_id} {current_cell.location.x} {current_cell.location.y}"
-                SEND_MESSAGE(AgentIDList([AgentID(nearest_id, 1)]), message) #send a message to nearest agent requesting help
+                self._agent.send(SEND_MESSAGE(AgentIDList([AgentID(nearest_id, 1)]), message)) #send a message to nearest agent requesting help
 
-                if len(agent_path > 0):
+                print(f"THE PATH IS {agent_path}")
+
+                if len(nearest_path) > 0:
+                    #print(f"NEAREST AGENT IS {agent_id} at distance {agent_path}")
                     self.send_and_end_turn(SLEEP())
+
                 else:
                     self.send_and_end_turn(TEAM_DIG())
             else:
@@ -215,7 +218,6 @@ class ExampleAgent(Brain):
             return
 
         self._agent.log(f"LOCATIONS: {self._agent_locations_and_energy}")
-        print(self._locs_with_survs_and_amount  )
         # GENERATE A PATH TO THE SURVIVOR
         # Start by finding the closest survivor to save
         self._current_goal = self.get_closest_survivor()
