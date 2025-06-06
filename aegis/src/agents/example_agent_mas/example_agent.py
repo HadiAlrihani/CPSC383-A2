@@ -92,6 +92,13 @@ class ExampleAgent(Brain):
             # Create a Location object from the extracted coordinates.
             location = create_location(location_x, location_y)
 
+            # If the message is directed towards this agent
+            if agent_id == self._agent.get_agent_id().id:
+                message = f"CANCEL {self._current_goal.x} {self._current_goal.y}"
+                SEND_MESSAGE(AgentIDList(), message)
+
+                self._current_goal = location #set new goal for this agent
+
             #Determine which agent should be sent as the helper
 
         elif msg_list[0] == "GOTO":
@@ -104,11 +111,6 @@ class ExampleAgent(Brain):
 
             #Agent receiving this message should begin to move towards the location in the rubble
 
-        elif msg_list[0] == "LEADER":
-            # Message sharing the id of the agent leader
-            # Format: LEADER {agent id}
-            leader_id = msg_list[1]
-
         elif msg_list[0] == "SAVING":
             # Message from an agent which is saving a survivor at the mentioned location
             # So that we don't save the save survivor if help is not needed
@@ -118,6 +120,16 @@ class ExampleAgent(Brain):
             # Update it in our status_of_survivor dictionary
             self._status_of_survivor[create_location(location_x, location_y)] = (True, smr.from_agent_id.id)
 
+        elif msg_list[0] == "CANCEL":
+            #MESSAGE from an agent notifying that they are no longer pursusing the survivor at the given location
+            #Format: CANCEL {x coordinate of survivor} {y coordinate of survivor}
+            location_x = int(msg_list[1])
+            location_y = int(msg_list[2])
+            # Create a Location object from the extracted coordinates.
+            location = create_location(location_x, location_y)
+
+            #set that the agent is no longer being saved by an agent
+            self._status_of_survivor[location] = (False, 0)
         else:
             # A message was sent that doesn't match any of our known formats
             self._agent.log(f"Unknown message format: {smr.msg}")
@@ -171,10 +183,39 @@ class ExampleAgent(Brain):
 
         # If rubble is present and survivor is present, try to clear it and end the turn.
         if isinstance(top_layer, Rubble) and world.get_cell_at(self._agent.get_location()).has_survivors:
-            self.send_and_end_turn(TEAM_DIG())
+            #if multiple agents are required to clear the rubble, request help
+            if self._locs_with_survs_and_amount[current_cell.location] > 1:
+                nearest_cost = float('inf') #initialize nearest agent as infinity
+                nearest_id = self._agent.get_agent_id().id #index of current agent initially
+
+                for agent_id in self._agent_locations_and_energy:
+                    agent_location, agent_energy = self._agent_locations_and_energy(agent_id) 
+
+                    if agent_id == self._agent.get_agent_id().id: #agent skips its own location, only looks at other agents
+                        continue
+
+                    agent_path, agent_cost = self.get_path_to_location(self, world, agent_location) #path and cost to first agent in list
+
+                    if agent_cost < agent_energy: #agent won't have enough energy
+                        continue
+
+                    if agent_cost < nearest_cost:
+                        nearest_cost = agent_cost
+                        nearest_id = agent_id
+
+                message = f"HELP {nearest_id} {current_cell.location.x} {current_cell.location.y}"
+                SEND_MESSAGE(AgentIDList([AgentID(nearest_id, 1)]), message) #send a message to nearest agent requesting help
+
+                if len(agent_path > 0):
+                    self.send_and_end_turn(SLEEP())
+                else:
+                    self.send_and_end_turn(TEAM_DIG())
+            else:
+                self.send_and_end_turn(TEAM_DIG())
             return
 
         self._agent.log(f"LOCATIONS: {self._agent_locations_and_energy}")
+        print(self._locs_with_survs_and_amount  )
         # GENERATE A PATH TO THE SURVIVOR
         # Start by finding the closest survivor to save
         self._current_goal = self.get_closest_survivor()
