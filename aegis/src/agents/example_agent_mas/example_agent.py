@@ -1,4 +1,4 @@
-from typing import override
+from typing import override, Optional
 
 # If you need to import anything else, add it to the import below.
 from aegis import (
@@ -38,6 +38,7 @@ class ExampleAgent(Brain):
         self._status_of_survivor: dict[Location, tuple[bool, int]] = {}  # Boolean value is True if an agent is on its way to save the survivor, False otherwise. Int value is agent id saving it.
         self._visited_locations: set[Location] = set()
         self._agent_locations_and_energy: dict[int, tuple[Location, int]] = {}  # Key is agent id (just the int unique id), Value is a tuple of location and energy
+        self._agent_location_of_helping: dict[int, Optional[Location]] = {}  # Key is agent id (just uid), Value is a tuple of location its helping at (None if not helping)
         self._current_goal: Location | None = None
 
     @override
@@ -83,16 +84,32 @@ class ExampleAgent(Brain):
             self._agent_locations_and_energy[smr.from_agent_id.id] = (location, energy)
 
         elif msg_list[0] == "HELP":
-            # Message where agents ask for help removing rubble, sent to leader agent
+            # Message where agents ask for help removing rubble
             # Necessary since rubble cannot be detected until an agent is adjacent to it
-            # Format: HELP {agent_id of agent requesting help} {x coordinate} {y coordinate}
-            agent_id = int(msg_list[1]) #used so we don't accidentally consider sending the agent requesting for help as the helper
+            # Format: HELP {agent_id of agent whose help we want} {x coordinate of rubble} {y coordinate of rubble}
+            agent_id = int(msg_list[1])
             location_x = int(msg_list[2])
             location_y = int(msg_list[3])
             # Create a Location object from the extracted coordinates.
             location = create_location(location_x, location_y)
 
-            #Determine which agent should be sent as the helper
+            # Update helping location and status of the agent whose help is needed
+            self._agent_location_of_helping[agent_id] = location
+
+        elif msg_list[0] == "HELP_OVER":
+            # Message where agents tell their help is over, so other agents can ask them for another help if needed
+            # Format: HELP_OVER
+            agent_id = smr.from_agent_id.id
+
+            self._agent_location_of_helping[agent_id] = None
+
+        elif msg_list[0] == "CANCELED_TASKS":
+            # Message where agents tell they are not saving a survivor if they initially were going to
+            # So other agents can take over their tasks if possible
+            # Format: CANCELED_TASKS
+            agent_id = smr.from_agent_id.id
+
+            self.cancel_tasks(agent_id)
 
         elif msg_list[0] == "GOTO":
             # Message from group leader ordering an agent to help another agent remove rubble
@@ -126,9 +143,6 @@ class ExampleAgent(Brain):
     def think(self) -> None:
         self._agent.log("Thinking")
 
-        if self._agent.get_round_number() == 21 and self._agent.get_agent_id().id == 3:
-            self._agent.log(f"I am saving: {self.get_takeover_survivor(self.get_world())}")
-
         if self._agent.get_round_number() == 1:
             # Locate all survivors and set their status. Will be helpful in knowing which survivor is being saved.
             grid = self.get_world().get_world_grid()  # grid is a list[list[Cell]]
@@ -136,6 +150,10 @@ class ExampleAgent(Brain):
                 for cell in row:
                     if cell.has_survivors:
                         self._status_of_survivor[cell.location] = (False, 0) # Agent ID is set as zero since no agent is saving the survivor
+
+            # Set helping location to None (not helping)
+            self._agent_location_of_helping[self._agent.get_agent_id().id] = None
+            self._agent.send(SEND_MESSAGE(AgentIDList(), f"HELP_OVER"))
 
         # Using AgentIDList() will send the message to all agents in your group
         # Useful for broadcasting information, such as about the world state (e.g. to tell people a survivor was saved) or needing help with a task (e.g. need another agent to help dig this rubble)).
@@ -166,7 +184,6 @@ class ExampleAgent(Brain):
             new_surv_loc = self.get_takeover_survivor(world)
             # If we selected a survivor mark it as being saved and inform the other agents
             if new_surv_loc:
-                self._agent.log(f"I am saving: {new_surv_loc}")
                 self._status_of_survivor[new_surv_loc] = (True, self._agent.get_agent_id().id)
                 self._agent.send(SEND_MESSAGE(AgentIDList(), f"SAVING {new_surv_loc.x} {new_surv_loc.y}"))
 
@@ -177,9 +194,49 @@ class ExampleAgent(Brain):
 
         # If rubble is present and survivor is present, try to clear it and end the turn.
         if isinstance(top_layer, Rubble) and world.get_cell_at(self._agent.get_location()).has_survivors:
-            self.send_and_end_turn(TEAM_DIG())
+            # Check how many agents needed and energy needed for removing
+            agents_needed = top_layer.remove_agents
+            energy_needed = top_layer.remove_energy
+            agents_present = len(self.get_agents_at_location(self._agent.get_location()))
+            num_of_more_agents_needed = agents_needed - agents_present
+
+            # Call agents for help if needed
+            if num_of_more_agents_needed > 0:
+                # Call only the number of agents that are needed
+                list_of_selected_agents = self.get_closest_available_agent_for_rubble(world, self._agent.get_location(), energy_needed, num_of_more_agents_needed)
+                # Send message requesting help from selected agents, if it has not started helping already
+                for id in list_of_selected_agents:
+                    if not self._agent_location_of_helping[id] == self._agent.get_location():
+                        self._agent.send(SEND_MESSAGE(AgentIDList(), f"HELP {id} {self._agent.get_location().x} {self._agent.get_location().y}"))
+                self.send_and_end_turn(SLEEP())
+                return
+            else:
+                # If current agent is done helping, send a message saying it's done
+                if self._agent_location_of_helping[self._agent.get_agent_id().id]:
+                    self._agent_location_of_helping[self._agent.get_agent_id().id] = None
+                    self._agent.send(SEND_MESSAGE(AgentIDList(), f"HELP_OVER"))
+                self.send_and_end_turn(TEAM_DIG())
+                return
+
+        # If this agent's help is needed, go to the rubble and cancel current tasks if any
+        if self._agent_location_of_helping[self._agent.get_agent_id().id]:
+            self.cancel_tasks(self._agent.get_agent_id().id)
+            # Send a message to other tasks that this agent has cancelled its other tasks
+            self._agent.send(SEND_MESSAGE(AgentIDList(), f"CANCELED_TASKS"))
+
+            # Move to the rubble
+            self._current_goal = self._agent_location_of_helping[self._agent.get_agent_id().id]
+            path, path_cost = self.get_path_to_location(world, self._agent.get_location(), self._current_goal)
+            # Make a move according to the path
+            # Send your next location and energy to all the agents (next location helps with message lag of 1 round)
+            next_loc = path[0]
+            move_cost = world.get_cell_at(next_loc).move_cost
+            self._agent.send(SEND_MESSAGE(AgentIDList(),f"LOC {next_loc.x} {next_loc.y} {self._agent.get_energy_level() - move_cost}"))
+            self.make_a_move(path)
             return
 
+
+        # Printing locations of agents and status of survivors for debugging
         self._agent.log(f"LOCATIONS: {self._agent_locations_and_energy}")
         self._agent.log(f"SAVING: {self._status_of_survivor}")
 
@@ -224,7 +281,7 @@ class ExampleAgent(Brain):
             return
         else:
             # Sending sleep does not use energy and agent doesn't move
-            self.send_and_end_turn(MOVE(Direction.CENTER))
+            self.send_and_end_turn(SLEEP())
             return
 
     def send_and_end_turn(self, command: AgentCommand):
@@ -305,7 +362,6 @@ class ExampleAgent(Brain):
                             selected_survivor_loc = loc
 
         return selected_survivor_loc
-
 
     # Method for pathfinding. Returns a list of locations making up the path and cost of path; None if no path found
     def get_path_to_location(self, world, start_loc, target_loc):
@@ -407,3 +463,48 @@ class ExampleAgent(Brain):
                     min_dist = dist
                     closest_loc = charge_loc
         return closest_loc
+
+    # Method that returns a list of agent ids (just uid) at a given location
+    def get_agents_at_location(self, loc):
+        agents_at_loc = []
+        for id in list(self._agent_locations_and_energy.keys()):
+            if self._agent_locations_and_energy[id][0] == loc:
+                agents_at_loc.append(id)
+        return agents_at_loc
+
+    # Method that returns the list of ids of agents that are available and closest to rubble for helping
+    # Parameters: World object, location of rubble, rubble removal energy, number of agents needed
+    def get_closest_available_agent_for_rubble(self, world, loc, removal_energy, num):
+        list_of_agents = list(self._agent_locations_and_energy.keys())
+        list_of_selected_agents = []
+        for _ in range(num):
+            # Select the agent based on path distance
+            min_dist = float('inf')
+            selected_agent = None
+            for id in list_of_agents:
+                # Select only if agent is not helping someone else AND agent is not current agent
+                if (not self._agent_location_of_helping[id] or self._agent_location_of_helping[id] == loc) and id != self._agent.get_agent_id().id:
+                    # If path exists...
+                    path_tuple = self.get_path_to_location(world, self._agent_locations_and_energy[id][0], loc)
+                    if path_tuple:
+                        path, path_cost = path_tuple
+                        path_cost = path_cost + removal_energy  # Rubble removal energy is added to cost
+                        if path_cost < self._agent_locations_and_energy[id][1]:
+                            dist = len(path)
+                            if dist < min_dist:
+                                min_dist = dist
+                                selected_agent = id
+
+            # Remove selected agent from list_of_agents, and add it to list_of_selected_agents
+            if selected_agent:
+                list_of_agents.remove(selected_agent)
+                list_of_selected_agents.append(selected_agent)
+
+        return list_of_selected_agents
+
+    # Method that cancels tasks of an agent, if any
+    def cancel_tasks(self, id):
+        for survivor in list(self._status_of_survivor.keys()):
+            if self._status_of_survivor[survivor][1] == id:
+                self._status_of_survivor[survivor] = (False, 0)
+        return
