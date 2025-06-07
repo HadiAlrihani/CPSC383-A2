@@ -3,7 +3,7 @@ Name: Hadi Alrihani, Hasan Qasim, Mahin Chondigara
 Date: June 6, 2025
 Course: CPSC 383
 Semester: Spring 2025
-Tutorial: T02 (Hadi, Mahin), T_ (Hasan)
+Tutorial: T02 (Hadi, Mahin), T01 (Hasan)
 '''
 
 from typing import override, Optional
